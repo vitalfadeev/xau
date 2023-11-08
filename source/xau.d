@@ -29,11 +29,11 @@ enum : ushort {
 
 
 struct Xauth {
-    ushort family;
-    string address;
-    string number;
-    string name;
-    string data;
+    ushort  family;
+    string  address;
+    string  number;
+    string  name;
+    ubyte[] data;
 }
 
 
@@ -78,13 +78,6 @@ string file_name()
 }
 
 /*
-ReadAuth reads the next entry from auth_file.  
-*/
-auto ReadAuth( ref File f )
-{
-    return auth_file_reader( f );
-}
-/*
 Reads the next entry from auth_file.  
 ```
     string fname = file_name();
@@ -93,7 +86,7 @@ Reads the next entry from auth_file.
             writeln( auth );
 ```
 */
-struct auth_file_reader
+struct ReadAuth
 {
     File   f;
     Xauth _front;
@@ -136,9 +129,6 @@ struct auth_file_reader
         }
 
         front = &_front;
-
-        import std.stdio : writeln;
-        writeln( __FUNCTION__, ":", *front );
     }
 
     auto read_short( out ushort short_ptr )
@@ -155,7 +145,7 @@ struct auth_file_reader
         return 1;
     }
 
-    auto read_counted_string( out string s )
+    auto read_counted_string(T)( out T s )
     {
         ushort len;
 
@@ -215,7 +205,7 @@ struct auth_file_writer
         return 1;
     }
 
-    int write_counted_string( string s )
+    int write_counted_string(T)( T s )
     {
         import std.conv : to;
 
@@ -287,11 +277,10 @@ auto GetAuthByAddr(
          *   either name or entry.name are empty or
          *    name and entry.name are the same
          */
-
         if ((family == FamilyWild || entry.family == FamilyWild || 
-             (entry.family == family && address == entry.address)) &&
+                (entry.family == family && address == entry.address)) &&
             (number.length == 0 || entry.number.length == 0 || (number == entry.number)) &&
-            (name.length == 0 || entry.name.length == 0 || (entry.name == name))
+            (name.length   == 0 || entry.name.length   == 0 || (entry.name == name))
         )
         {
             auth = *entry;

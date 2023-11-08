@@ -1,13 +1,19 @@
 module xau;
 
+import std.stdio : File;
+import core.sys.posix.sys.types : mode_t;
 
-string[] mechanisms = [
-    "Host Access",
-    "MIT‐MAGIC‐COOKIE‐1",
-    "XDM‐AUTHORIZATION‐1",
-    "SUN‐DES‐1",
-    "Server Interpreted",
-];
+extern(C)
+int open( const char *pathname, int flags, mode_t mode );
+
+
+//string[] mechanisms = [
+//    "Host Access",
+//    "MIT‐MAGIC‐COOKIE‐1",
+//    "XDM‐AUTHORIZATION‐1",
+//    "SUN‐DES‐1",
+//    "Server Interpreted",
+//];
 
 enum : ushort {
     FamilyInternet      = 0,
@@ -74,9 +80,9 @@ string file_name()
 /*
 ReadAuth reads the next entry from auth_file.  
 */
-auto ReadAuth( string file_name )
+auto ReadAuth( ref File f )
 {
-    return auth_file_reader( file_name );
+    return auth_file_reader( f );
 }
 /*
 Reads the next entry from auth_file.  
@@ -89,18 +95,14 @@ Reads the next entry from auth_file.
 */
 struct auth_file_reader
 {
-    import std.stdio : File;
-
-    string fname;
     File   f;
     Xauth _front;
 
 
-    this( string file_name )
+    this( ref File _f )
     {
-        f = File( file_name, "rb" );
-        if ( f.isOpen() )
-            popFront();
+        this.f = _f;
+        popFront();
     }
 
     @property
@@ -134,6 +136,9 @@ struct auth_file_reader
         }
 
         front = &_front;
+
+        import std.stdio : writeln;
+        writeln( __FUNCTION__, ":", *front );
     }
 
     auto read_short( out ushort short_ptr )
@@ -161,10 +166,9 @@ struct auth_file_reader
             s.length = 0;
         } 
         else {
-            if ( s.reserve( len ) != len )
-                return 0;
+            s.length = len;
 
-            auto buf = f.rawRead( s[0..len] );
+            auto buf = f.rawRead( (cast(ubyte*)s.ptr)[0..len] );
 
             if ( buf.length != len ) {
                 s.length = 0;
@@ -201,7 +205,7 @@ struct auth_file_writer
 
     int write_short ( ushort s )
     {
-        uchar[2] file_short;
+        ubyte[2] file_short;
 
         file_short[0] = ( s & cast(uint)0xff00 ) >> 8;
         file_short[1] = s & 0xff;
@@ -256,7 +260,6 @@ auto GetAuthByAddr(
     import std.file  : isFile;
 
     string auth_name;
-    File   auth_file;
 
     auth_name = file_name();
 
@@ -266,7 +269,12 @@ auto GetAuthByAddr(
     if ( !auth_name.isFile )      /* checks REAL id */
         return 0;
 
-    foreach( entry; ReadAuth( auth_name ) ) {
+    auto f = File( auth_name, "rb" );
+
+    if ( !f.isOpen() )
+        return 0;
+
+    foreach( entry; ReadAuth( f ) ) {
         /*
          * Match when:
          *   either family or entry.family are FamilyWild or
@@ -315,7 +323,6 @@ auto GetBestAuthByAddr(
 
 
     string auth_name;
-    File   auth_file;
     Xauth  best;
 
     auth_name = file_name();
@@ -326,14 +333,14 @@ auto GetBestAuthByAddr(
     if ( !auth_name.isFile )      /* checks REAL id */
         return 0;
 
-    auth_file = File( auth_name, "rb" );
+    auto f = File( auth_name, "rb" );
 
-    if ( !auth_file.isOpen() )
+    if ( !f.isOpen() )
         return 0;
 
     auto best_type = types.length;
 
-    foreach( entry; ReadAuth( auth_file ) ) {
+    foreach( entry; ReadAuth( f ) ) {
     /*
      * Match when:
      *   either family or entry.family are FamilyWild or
@@ -355,7 +362,7 @@ auto GetBestAuthByAddr(
         {
             if ( best_type == 0 )
             {
-                best = entry;
+                best = *entry;
                 break;
             }
             
@@ -363,7 +370,7 @@ auto GetBestAuthByAddr(
 
             if ( i < best_type )
             {
-                best = entry;
+                best = *entry;
                 best_type = i;
                 if ( i == 0 )
                     break;
@@ -401,22 +408,18 @@ auto GetBestAuthByAddr(
 */
 int LockAuth ( string file_name, int retries, int timeout, long dead )
 {
-    import std.datetime : Clock, seconds;
+    import std.datetime : Clock, seconds, dur;
     import std.file     : DirEntry, timeStatusChanged, FileException, remove;
     import std.format   : format;
     import std.conv     : octal;
     import std.string   : toStringz;
     import core.thread  : Thread;
-    import core.sys.posix.unistd : link;
-    import core.stdc.errno : EACCES, EEXIST, ENOENT;
-    import core.stdc    : O_WRONLY, O_CREAT, O_EXCL;
-    import core.stdc    : open, close;
-    import core.stdc    : errno;
+    import core.sys.posix.unistd    : link;
+    import core.stdc.errno          : EACCES, EEXIST, ENOENT;
+    import core.sys.posix.fcntl     : O_WRONLY, O_CREAT, O_EXCL;
+    import core.sys.posix.unistd    : close;
+    import core.stdc.errno          : errno;
     import core.sys.posix.sys.types : mode_t;
-
-    extern(C)
-    int open( const char *pathname, int flags, mode_t mode );
-
 
     int creat_fd = -1;
 
@@ -427,14 +430,14 @@ int LockAuth ( string file_name, int retries, int timeout, long dead )
     auto link_name = format!"%s-l"( file_name );
 
     try {
-        auto statb = std.file.DirEntry( creat_name ).statBuf;
+        auto statb = DirEntry( creat_name ).statBuf;
         auto now = Clock.currTime();
 
         /*
          * NFS may cause ctime to be before now, special
          * case a 0 deadtime to force lock removal
          */        
-        if ( dead == 0 || ( currTime - timeStatusChanged( statb ) ) > dead ) {
+        if ( dead == 0 || ( now - timeStatusChanged( statb ) ) > dur!("seconds")( dead ) ) {
             remove( creat_name );
             remove( link_name );
         }
@@ -497,10 +500,6 @@ int UnlockAuth ( string file_name )
 {
     import std.format   : format;
     import std.file     : remove;
-
-    version(WIN32)
-    string creat_name;
-    string link_name;
 
     if ( file_name.length > 1022 )
         return 0;
